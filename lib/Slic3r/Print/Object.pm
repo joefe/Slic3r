@@ -4,7 +4,7 @@ use Moo;
 use List::Util qw(min sum first);
 use Slic3r::ExtrusionPath ':roles';
 use Slic3r::Geometry qw(Z PI scale unscale deg2rad rad2deg scaled_epsilon chained_path_points);
-use Slic3r::Geometry::Clipper qw(diff_ex intersection_ex union_ex offset collapse_ex);
+use Slic3r::Geometry::Clipper qw(diff diff_ex intersection_ex union_ex offset collapse_ex);
 use Slic3r::Surface ':types';
 
 has 'print'             => (is => 'ro', weak_ref => 1, required => 1);
@@ -787,6 +787,97 @@ sub combine_infill {
 }
 
 sub generate_support_material {
+    my $self = shift;
+    return if $self->layer_count < 2;
+    
+    my $margin = scale 3;
+    my $threshold_rad;
+    if ($Slic3r::Config->support_material_threshold) {
+        $threshold_rad = deg2rad($Slic3r::Config->support_material_threshold + 1);  # +1 makes the threshold inclusive
+        Slic3r::debugf "Threshold angle = %d°\n", rad2deg($threshold_rad);
+    }
+    
+    # Move down
+    my $flow                    = $self->print->support_material_flow;
+    my $pattern_spacing = ($Slic3r::Config->support_material_spacing > $flow->spacing)
+        ? $Slic3r::Config->support_material_spacing
+        : $flow->spacing;
+    
+    # determine contact areas
+    for my $layer_id (1 .. $#{$self->layers}) {
+        my $layer = $self->layers->[$layer_id];
+        my $lower_layer = $self->layers->[$layer_id];
+        
+        # detect contact areas needed to support this layer
+        my @contact = ();
+        foreach my $layerm (@{$layer->regions}) {
+            my $fw = $layerm->perimeter_flow->scaled_width;
+            my $diff;
+            
+            # If a threshold angle was specified, use a different logic for detecting overhangs.
+            if (defined $threshold_rad) {
+                my $d = scale $lower_layer->height * ((cos $threshold_rad) / (sin $threshold_rad));
+                $diff = diff(
+                    [ offset([ map $_->p, @{$layerm->slices} ], -$d) ],
+                    [ map @$_, @{$lower_layer->slices} ],
+                );
+                $diff = diff(
+                    [ offset([ map @$_, @$diff ], $d - $fw/2) ],
+                    [ map @$_, @{$lower_layer->slices} ],
+                );
+            } else {
+                $diff = diff(
+                    [ offset([ map $_->p, @{$layerm->slices} ], -$fw/2) ],
+                    [ map @$_, @{$lower_layer->slices} ],
+                );
+                # $diff now contains the ring or stripe comprised between the boundary of 
+                # lower slices and the centerline of the last perimeter in this overhanging layer.
+            }
+            
+            next if !@$diff;
+            
+            # Let's define the required contact area as a stripe having 1/4w overlap with
+            # the overhanging perimeter.
+            $diff = diff_ex(
+                [ offset([ map @$_, @$diff ], $fw/2 + $margin) ],
+                [
+                    offset([ map @$_, @$diff ], $fw/4),
+                    (map @$_, @{$lower_layer->slices}),
+                ],
+            );
+            push @contact, @$diff;
+        }
+        next if !@contact;
+        
+        # now apply the contact areas to the layer were they need to be made
+        {
+            # get the average nozzle diameter used on this layer
+            my @nozzle_diameters = map $_->nozzle_diameter,
+                map { $_->perimeter_flow, $_->solid_infill_flow }
+                @{$layer->regions};
+            my $nozzle_diameter = sum(@nozzle_diameters)/@nozzle_diameters;
+            
+            # find the layer of our contact areas
+            my $h = $nozzle_diameter;
+            my $contact_layer = $layer;
+            while ($h > $contact_layer->height) {
+                $h -= $contact_layer->height;
+                my $next = $contact_layer->id - 1;
+                last if $next < 0;
+                $contact_layer = $self->layers->[$next];
+            }
+            $contact_layer->support_material_contact_height = $contact_layer->height - $h;
+        }
+        
+        use Slic3r::SVG;
+        Slic3r::SVG::output("contact.svg",
+            red_expolygons => [@contact],
+            expolygons => $lower_layer->slices,
+        );exit;
+    }
+}
+
+sub generate_support_material2 {
     my $self = shift;
     return if $self->layer_count < 2;
     
