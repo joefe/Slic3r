@@ -806,7 +806,7 @@ sub generate_support_material {
     # determine contact areas
     for my $layer_id (1 .. $#{$self->layers}) {
         my $layer = $self->layers->[$layer_id];
-        my $lower_layer = $self->layers->[$layer_id];
+        my $lower_layer = $self->layers->[$layer_id-1];
         
         # detect contact areas needed to support this layer
         my @contact = ();
@@ -822,7 +822,7 @@ sub generate_support_material {
                     [ map @$_, @{$lower_layer->slices} ],
                 );
                 $diff = diff(
-                    [ offset([ map @$_, @$diff ], $d - $fw/2) ],
+                    [ offset($diff, $d - $fw/2) ],
                     [ map @$_, @{$lower_layer->slices} ],
                 );
             } else {
@@ -835,15 +835,18 @@ sub generate_support_material {
             }
             
             next if !@$diff;
+        
+        use Slic3r::SVG;
+        Slic3r::SVG::output("overhang.svg",
+            red_polygons => $diff,
+            expolygons => $lower_layer->slices,
+        );
             
             # Let's define the required contact area as a stripe having 1/4w overlap with
             # the overhanging perimeter.
             $diff = diff_ex(
-                [ offset([ map @$_, @$diff ], $fw/2 + $margin) ],
-                [
-                    offset([ map @$_, @$diff ], $fw/4),
-                    (map @$_, @{$lower_layer->slices}),
-                ],
+                [ offset($diff, $fw/2 + $margin) ],
+                [ offset([ map @$_, @{$lower_layer->slices} ], $fw/2) ],
             );
             push @contact, @$diff;
         }
@@ -866,7 +869,7 @@ sub generate_support_material {
                 last if $next < 0;
                 $contact_layer = $self->layers->[$next];
             }
-            $contact_layer->support_material_contact_height = $contact_layer->height - $h;
+            $contact_layer->support_material_contact_height($contact_layer->height - $h);
         }
         
         use Slic3r::SVG;
