@@ -802,6 +802,7 @@ sub generate_support_material {
     my $circle_distance = 4 * $flow->scaled_width;
     my $circle;
     {
+        # TODO: make sure teeth between circles are compatible with support material flow
         my $r = 1.5 * $flow->scaled_width;
         $circle = Slic3r::Polygon->new([ map [ $r * cos $_, $r * sin $_ ], (5*PI/3, 4*PI/3, PI, 2*PI/3, PI/3, 0) ]);
     }
@@ -810,6 +811,7 @@ sub generate_support_material {
         : $flow->spacing;
     
     # determine contact areas
+    my %contact = ();  # layer_id => [ expolygons ]
     for my $layer_id (1 .. $#{$self->layers}) {
         my $layer = $self->layers->[$layer_id];
         my $lower_layer = $self->layers->[$layer_id-1];
@@ -841,12 +843,6 @@ sub generate_support_material {
             }
             
             next if !@$diff;
-        
-        use Slic3r::SVG;
-        Slic3r::SVG::output("overhang.svg",
-            red_polygons => $diff,
-            expolygons => $lower_layer->slices,
-        );
             
             # Let's define the required contact area by using a max gap of half the upper 
             # extrusion width. 
@@ -876,7 +872,52 @@ sub generate_support_material {
                 $contact_layer = $self->layers->[$next];
             }
             $contact_layer->support_material_contact_height($contact_layer->height - $h);
+            $contact{$layer->id} = [ @contact ];
         }
+    }
+    
+    # determine depth for each layer (similar logic as combine_infill) using the maximum allowed layer height
+    my $support_material_height = $flow->nozzle_diameter;
+    
+    # define the combinations
+    my @combine = ();   # layer_id => thickness in layers
+    {
+        my @layer_heights = map $self->layers->[$_]->height, 0..$#{$self->layers};
+        my $current_height = my $layers = 0;
+        for my $layer_id (1 .. $#layer_heights) {
+            my $height = $self->layers->[$layer_id]->height;
+            
+            if ($current_height + $height > $support_material_height) {
+                $combine[$layer_id-1] = $layers;
+                $current_height = $layers = 0;
+            }
+            
+            $current_height += $height;
+            $layers++;
+        }
+    }
+    
+    # Let's now determine shells (interface layers) and normal support below them.
+    # Prepare a queue to store the last 'n' layers, where 'n' is the number of desired
+    # interface layers.
+    my @upper = map [], 1..$Slic3r::Config->support_material_interface_layers;
+    
+    for my $layer_id (reverse sort keys %contact) {
+        # determine what layers do our shells and support belong to
+        my @layers = ();
+        for (my $i = $layer_id-1; $i >= 0; $i -= $combine[$i] // 1) {
+            push @layers, $self->layers->[$i];
+        }
+        
+        # count contact layer as interface layer
+        foreach my $layer (@layers[0 .. $Slic3r::Config->support_material_interface_layers-2]) {
+            
+        }
+    }
+    
+    
+    
+    my @contact;
         
         # find centerline of the external loop of the contours
         @contact = offset([ map @$_, @contact ], -$flow->scaled_width/2);
@@ -890,16 +931,7 @@ sub generate_support_material {
                 [ map $circle->clone->translate(@$_), @positions ],
             );
         
-        use Slic3r::SVG;
-        Slic3r::SVG::output("contact.svg",
-            red_expolygons => [@contact],
-            #points => \@positions,
-            #green_polygons => [@circles],
-            expolygons => $lower_layer->slices,
-        );exit;
-        
         }
-    }
 }
 
 sub generate_support_material2 {
