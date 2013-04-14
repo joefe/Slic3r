@@ -797,8 +797,14 @@ sub generate_support_material {
         Slic3r::debugf "Threshold angle = %d°\n", rad2deg($threshold_rad);
     }
     
-    # Move down
-    my $flow                    = $self->print->support_material_flow;
+    # Move down?
+    my $flow            = $self->print->support_material_flow;
+    my $circle_distance = 4 * $flow->scaled_width;
+    my $circle;
+    {
+        my $r = 1.5 * $flow->scaled_width;
+        $circle = Slic3r::Polygon->new([ map [ $r * cos $_, $r * sin $_ ], (5*PI/3, 4*PI/3, PI, 2*PI/3, PI/3, 0) ]);
+    }
     my $pattern_spacing = ($Slic3r::Config->support_material_spacing > $flow->spacing)
         ? $Slic3r::Config->support_material_spacing
         : $flow->spacing;
@@ -842,8 +848,8 @@ sub generate_support_material {
             expolygons => $lower_layer->slices,
         );
             
-            # Let's define the required contact area as a stripe having 1/4w overlap with
-            # the overhanging perimeter.
+            # Let's define the required contact area by using a max gap of half the upper 
+            # extrusion width. 
             $diff = diff_ex(
                 [ offset($diff, $fw/2 + $margin) ],
                 [ offset([ map @$_, @{$lower_layer->slices} ], $fw/2) ],
@@ -872,11 +878,27 @@ sub generate_support_material {
             $contact_layer->support_material_contact_height($contact_layer->height - $h);
         }
         
+        # find centerline of the external loop of the contours
+        @contact = offset([ map @$_, @contact ], -$flow->scaled_width/2);
+        
+        # apply a pattern to the loop
+        {
+            my @positions = map Slic3r::Polygon->new($_)->split_at_first_point->regular_points($circle_distance), @contact;
+            # TODO: only consider positions close to the object
+            @contact = diff(
+                [ @contact ],
+                [ map $circle->clone->translate(@$_), @positions ],
+            );
+        
         use Slic3r::SVG;
         Slic3r::SVG::output("contact.svg",
             red_expolygons => [@contact],
+            #points => \@positions,
+            #green_polygons => [@circles],
             expolygons => $lower_layer->slices,
         );exit;
+        
+        }
     }
 }
 
